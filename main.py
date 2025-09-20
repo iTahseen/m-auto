@@ -31,6 +31,7 @@ from blocklist import (
     is_blocklist_active, add_to_permanent_blocklist, get_user_blocklist
 )
 from signup import signup_command, signup_callback_handler, signup_message_handler
+from spammer import spammer_command, spammer_message_handler, spammer_callback_handler
 
 API_TOKEN = "7735279075:AAH_GbPyx4oSh1_1Qn3GYvxNNRr2DEydBgI"
 ADMIN_USER_IDS = [6387028671, 7725409374, 6816341239, 6204011131]
@@ -244,6 +245,10 @@ async def aio_command(message: types.Message):
         return
     await message.answer("Choose an action:", reply_markup=aio_markup)
 
+@router.message(Command("spam"))
+async def spam_command(message: types.Message):
+    await spammer_command(message)
+    
 @router.message(Command("transfer"))
 async def transfer_command(message: types.Message):
     if not has_valid_access(message.chat.id):
@@ -270,13 +275,16 @@ async def handle_main_message(message: types.Message):
     user_id = message.from_user.id
     state = user_states[user_id]
 
-    # 1. SIGNUP/SIGNIN message handler (priority, skip everything else if handled)
+    # 1. SPAMMER handler (highest priority)
+    if await spammer_message_handler(message):
+        return
+
+    # 2. SIGNUP/SIGNIN handler (next priority)
     if await signup_message_handler(message):
         return
 
-    # 2. Custom Speed Handler (only if not in signup/signin)
+    # 3. Custom Speed Handler
     if state.get("awaiting_custom_speed"):
-        # Allow user to cancel custom speed
         if message.text and message.text.strip().lower() == "/cancel":
             state.pop("awaiting_custom_speed", None)
             state.pop("pending_speed_mode", None)
@@ -285,15 +293,15 @@ async def handle_main_message(message: types.Message):
         await handle_custom_speed_message(message, state, bot, get_tokens, get_current_account)
         return
 
-    # 3. Ignore commands (handled elsewhere)
+    # 4. Ignore commands (handled elsewhere)
     if message.text and message.text.startswith("/"):
         return
 
-    # 4. Verify access
+    # 5. Verify access
     if message.from_user.is_bot or not has_valid_access(user_id):
         return
 
-    # 5. Token Handler
+    # 6. Token Handler
     if message.text:
         token_data = message.text.strip().split(" ")
         token = token_data[0]
@@ -331,6 +339,10 @@ async def callback_handler(callback_query: CallbackQuery):
     state = user_states[user_id]
     if not has_valid_access(user_id):
         await callback_query.answer("You are not authorized to use this bot.")
+        return
+
+    # --- SPAMMER CALLBACKS (priority) ---
+    if await spammer_callback_handler(callback_query):
         return
 
     # --- SIGNUP/SIGNIN CALLS (priority) ---
@@ -447,6 +459,7 @@ async def set_bot_commands():
         BotCommand(command="invoke", description="Verify and remove disabled accounts"),
         BotCommand(command="skip", description="Unsubscribe from all chatrooms"),
         BotCommand(command="tools", description="Accounts & Tools"),
+        BotCommand(command="spam", description="Create multiple accounts"),
         BotCommand(command="password", description="Enter password for temporary access"),
         BotCommand(command="transfer", description="Transfer all tokens/settings to another Telegram user"),
     ]
