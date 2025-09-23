@@ -61,9 +61,11 @@ async def check_email_exists(email):
                 resp_json = await resp.json()
             except Exception:
                 resp_json = {}
-            if status == 406 or resp_json.get("errorCode") == "AlreadyInUse":
-                return False, resp_json.get("errorMessage", "This email address is already in use.")
-            return True, ""
+            # Accept ONLY if status is 200 and errorCode is exactly ""
+            if status == 200 and resp_json.get("errorCode") == "":
+                return True, ""
+            # Treat all else as unavailable
+            return False, resp_json.get("errorMessage", "This email address is already in use.")
 
 async def spammer_command(message: Message):
     spammer_states[message.chat.id] = {"stage": "menu"}
