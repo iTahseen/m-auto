@@ -78,7 +78,7 @@ async def spammer_message_handler(message: Message):
         # Handle /done for photos
         if state.get("stage") == "ask_photos" and message.text.strip().lower() == "/done":
             state["stage"] = "ask_country"
-            await message.answer("Enter a country code (e.g. US, UK, RU) for all accounts:", reply_markup=SPAMMER_MENU)
+            await message.answer("Enter a country code (e.g. US, UK, RU) or type 'all' for all countries:", reply_markup=SPAMMER_MENU)
             return True
         return False
 
@@ -184,8 +184,13 @@ async def spammer_message_handler(message: Message):
 
     if state.get("stage") == "ask_country":
         cc = message.text.strip().upper()
+        if cc == "" or cc == "ALL":
+            state["filter_country"] = ""  # All countries
+            state["stage"] = "ask_age_from"
+            await message.answer("Enter minimum age (e.g. 18):", reply_markup=SPAMMER_MENU)
+            return True
         if not (2 <= len(cc) <= 3):
-            await message.answer("Enter a valid 2- or 3-letter country code (e.g. US, UK, RU):", reply_markup=SPAMMER_MENU)
+            await message.answer("Enter a valid 2- or 3-letter country code (e.g. US, UK, RU), or type 'all' for all countries:", reply_markup=SPAMMER_MENU)
             return True
         state["filter_country"] = cc
         state["stage"] = "ask_age_from"
@@ -213,7 +218,10 @@ async def spammer_message_handler(message: Message):
             state["filter_max_age"] = max_age
             year = 2025
             filter_obj = dict(DEFAULT_FILTER)
-            filter_obj["filterNationalityCode"] = state["filter_country"]
+            if state["filter_country"]:
+                filter_obj["filterNationalityCode"] = state["filter_country"]
+            else:
+                filter_obj["filterNationalityCode"] = ""  # All countries
             filter_obj["filterBirthYearFrom"] = year - max_age
             filter_obj["filterBirthYearTo"] = year - min_age
             state["filter_obj"] = filter_obj
@@ -273,28 +281,26 @@ async def spammer_callback_handler(callback: CallbackQuery):
     if callback.data == "spammer_photos_done":
         state["stage"] = "ask_country"
         await callback.message.edit_text(
-            "Enter a country code (e.g. US, UK, RU) for all accounts:",
+            "Enter a country code (e.g. US, UK, RU) or type 'all' for all countries:",
             reply_markup=SPAMMER_MENU
         )
         await callback.answer()
         return True
 
     if callback.data == "spammer_verify_all":
-        # Only check not_verified!
         to_check = state.get("not_verified", [])
-        # If first time or all verified, check all accounts
         if not to_check and not state.get("verified"):
             to_check = [acc["email"] for acc in state.get("accounts", []) if not acc.get("signup_failed")]
         verified = state.get("verified", [])
         still_unverified = []
         verified_infos = []
         email_to_account = {acc["email"]: acc for acc in state.get("accounts", []) if not acc.get("signup_failed")}
-        # Only check not_verified accounts
         for email in to_check:
             account = email_to_account[email]
             login_result = await try_signin(account["email"], account["password"])
             error_code = login_result.get("errorCode")
             access_token = login_result.get("accessToken")
+            error_msg = login_result.get("errorMessage") or login_result.get("message") or "login failed"
             if access_token and (not error_code or error_code == ""):
                 if email not in verified:
                     set_token(user_id, access_token, account["name"], email)
@@ -309,11 +315,11 @@ async def spammer_callback_handler(callback: CallbackQuery):
                         verified_infos.append(info_card)
                     verified.append(email)
             elif error_code in ("EmailVerificationRequired", "NotVerified"):
-                still_unverified.append(email)
+                still_unverified.append(email + " (not verified)")
             else:
-                still_unverified.append(email + " (login failed)")
+                still_unverified.append(f"{email} ({error_msg})")
         state["verified"] = verified
-        state["not_verified"] = still_unverified
+        state["not_verified"] = [e.split(" ")[0] for e in still_unverified]  # keep raw email for next round
         if still_unverified:
             msg = (
                 f"✅ Verified accounts:\n{chr(10).join(verified) or 'None'}\n\n"
