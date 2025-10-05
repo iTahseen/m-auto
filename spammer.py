@@ -1,5 +1,7 @@
 import aiohttp
 import itertools
+import random
+import asyncio
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from db import set_token, set_info_card, set_user_filters
 from signup import format_user_with_nationality, DEFAULT_FILTER, try_signup, try_signin, resend_verification_email, meeff_upload_image
@@ -34,14 +36,16 @@ def generate_gmail_dot_variants(email):
         return [email]
     positions = list(range(1, len(local)))
     combos = []
-    for i in range(0, len(positions)+1):
+    for i in range(0, len(positions) + 1):
         for dots in itertools.combinations(positions, i):
             s = list(local)
             for offset, pos in enumerate(dots):
                 s.insert(pos + offset, '.')
             combos.append("".join(s) + '@gmail.com')
-    return list(set(combos))
+    combos = list(set(combos))
+    return combos
 
+# Unified check_email_exists, following signup.py logic
 async def check_email_exists(email):
     url = "https://api.meeff.com/user/checkEmail/v1"
     payload = {
@@ -61,11 +65,20 @@ async def check_email_exists(email):
                 resp_json = await resp.json()
             except Exception:
                 resp_json = {}
-            # Accept ONLY if status is 200 and errorCode is exactly ""
-            if status == 200 and resp_json.get("errorCode") == "":
-                return True, ""
-            # Treat all else as unavailable
-            return False, resp_json.get("errorMessage", "This email address is already in use.")
+            if status == 406 or resp_json.get("errorCode") == "AlreadyInUse":
+                return False, resp_json.get("errorMessage", "This email address is already in use.")
+            return True, ""
+
+async def check_many_emails(emails, concurrency=15):
+    random.shuffle(emails)
+    sem = asyncio.Semaphore(concurrency)
+    async def worker(email):
+        async with sem:
+            ok, _ = await check_email_exists(email)
+            return email if ok else None
+    tasks = [worker(e) for e in emails]
+    done = await asyncio.gather(*tasks)
+    return [e for e in done if e]
 
 async def spammer_command(message: Message):
     spammer_states[message.chat.id] = {"stage": "menu"}
@@ -77,7 +90,6 @@ async def spammer_message_handler(message: Message):
     if not state:
         return False
     if message.text and message.text.startswith("/"):
-        # Handle /done for photos
         if state.get("stage") == "ask_photos" and message.text.strip().lower() == "/done":
             state["stage"] = "ask_country"
             await message.answer("Enter a country code (e.g. US, UK, RU) or type 'all' for all countries:", reply_markup=SPAMMER_MENU)
@@ -103,29 +115,34 @@ async def spammer_message_handler(message: Message):
             await message.answer("Only Gmail supported. Try again.", reply_markup=SPAMMER_MENU)
             return True
         state["email"] = email
+        dot_variants = generate_gmail_dot_variants(email)
+        state["dot_variants"] = dot_variants
         state["stage"] = "finding_emails"
-        checking_msg = await message.answer("Checking available emails...")
-        emails = generate_gmail_dot_variants(email)
-        available_emails = []
-        for eml in emails:
-            ok, _ = await check_email_exists(eml)
-            if ok:
-                available_emails.append(eml)
-                if len(available_emails) >= state["count"]:
-                    break
+        # Send a single message, update it with progress and then with result
+        checking_msg = await message.answer(
+            f"Found {len(dot_variants)} possible Gmail dot-combinations for {email}.\n"
+            f"Checking which combinations are available (this may take a while)..."
+        )
+        available_emails = await check_many_emails(dot_variants, concurrency=15)
         if len(available_emails) < state["count"]:
             await checking_msg.edit_text(
-                f"Only found {len(available_emails)} available emails. Try a different base or lower the count.",
+                f"Found {len(dot_variants)} possible Gmail dot-combinations for {email}.\n"
+                f"Only found {len(available_emails)} available emails:\n"
+                + "\n".join(available_emails) +
+                "\n\nTry a different base or lower the count.",
                 reply_markup=SPAMMER_MENU
             )
             state["stage"] = "ask_email"
             return True
-        state["emails"] = available_emails
-        state["stage"] = "ask_password"
+        state["emails"] = available_emails[:state["count"]]
         await checking_msg.edit_text(
-            f"Found {len(available_emails)} available emails. Enter password for all accounts:",
+            f"Found {len(dot_variants)} possible Gmail dot-combinations for {email}.\n"
+            f"Available for signup ({len(state['emails'])}):\n"
+            + "\n".join(state["emails"]) +
+            "\n\nEnter password for all accounts:",
             reply_markup=SPAMMER_MENU
         )
+        state["stage"] = "ask_password"
         return True
 
     if state.get("stage") == "ask_password":
@@ -321,7 +338,7 @@ async def spammer_callback_handler(callback: CallbackQuery):
             else:
                 still_unverified.append(f"{email} ({error_msg})")
         state["verified"] = verified
-        state["not_verified"] = [e.split(" ")[0] for e in still_unverified]  # keep raw email for next round
+        state["not_verified"] = [e.split(" ")[0] for e in still_unverified]
         if still_unverified:
             msg = (
                 f"✅ Verified accounts:\n{chr(10).join(verified) or 'None'}\n\n"
