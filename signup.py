@@ -233,8 +233,17 @@ async def signup_message_handler(message: Message):
         if gender not in ("M", "F"):
             await message.answer("Please enter M or F for gender:")
             return True
-        state["stage"] = "ask_desc"
+        state["stage"] = "ask_signup_country"
         state["gender"] = gender
+        await message.answer("Enter your signup country code (e.g. US, RU, UK):", reply_markup=BACK_TO_SIGNUP)
+        return True
+    if state.get("stage") == "ask_signup_country":
+        signup_country = message.text.strip().upper()
+        if not (2 <= len(signup_country) <= 3):
+            await message.answer("Enter a valid 2- or 3-letter country code (e.g. US, RU, UK):", reply_markup=BACK_TO_SIGNUP)
+            return True
+        state["signup_country"] = signup_country
+        state["stage"] = "ask_desc"
         await message.answer("Enter your profile description:", reply_markup=BACK_TO_SIGNUP)
         return True
     if state.get("stage") == "ask_desc":
@@ -298,7 +307,6 @@ async def signup_message_handler(message: Message):
         processing_msg = await message.answer("Signing in, please wait...", reply_markup=None)
         login_result = await try_signin(email, password)
         if login_result.get("accessToken"):
-            # Always save creds in state, even if not verified!
             state["creds"] = {"email": email, "password": password}
             creds = state["creds"]
             await store_token_and_show_card(processing_msg, login_result, creds)
@@ -379,7 +387,7 @@ async def try_signup(state):
         "birthYear": 2004,
         "birthMonth": 3,
         "birthDay": 1,
-        "nationalityCode": "US",
+        "nationalityCode": state.get("signup_country", "US"),
         "languages": "en,zh,ko,be,ru,uk",
         "levels": "5,1,1,1,1,1",
         "description": state["desc"],
@@ -458,9 +466,8 @@ async def store_token_and_show_card(msg_obj, login_result, creds):
         else:
             # Show resend button if not verified (no user info)
             await msg_obj.edit_text(
-                "Account signed in and saved! (Email not verified, info not available yet.)\n"
-                "Please verify your email, or click below to resend the verification email.",
+                "Account signed in, but no profile info found. Please verify your email and try again.",
                 reply_markup=RESEND_EMAIL_BUTTON
             )
     else:
-        await msg_obj.edit_text("Token not received, failed to save account.")
+        await msg_obj.edit_text("Failed to sign in after registration.", reply_markup=SIGNUP_MENU)
