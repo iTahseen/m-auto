@@ -118,7 +118,6 @@ async def spammer_message_handler(message: Message):
         dot_variants = generate_gmail_dot_variants(email)
         state["dot_variants"] = dot_variants
         state["stage"] = "finding_emails"
-        # Send a single message, update it with progress and then with result
         checking_msg = await message.answer(
             f"Found {len(dot_variants)} possible Gmail dot-combinations for {email}.\n"
             f"Checking which combinations are available (this may take a while)..."
@@ -163,6 +162,17 @@ async def spammer_message_handler(message: Message):
             await message.answer("Enter M or F for gender:", reply_markup=SPAMMER_MENU)
             return True
         state["gender"] = gender
+        # NEW: Ask for signup country before description/photos
+        state["stage"] = "ask_signup_country"
+        await message.answer("Enter the country code for SIGNUP (nationality, e.g. US, UK, RU):", reply_markup=SPAMMER_MENU)
+        return True
+
+    if state.get("stage") == "ask_signup_country":
+        signup_country = message.text.strip().upper()
+        if not (2 <= len(signup_country) <= 3):
+            await message.answer("Enter a valid 2- or 3-letter country code (e.g. US, UK, RU):", reply_markup=SPAMMER_MENU)
+            return True
+        state["signup_country"] = signup_country
         state["stage"] = "ask_desc"
         await message.answer("Enter profile description for all accounts:", reply_markup=SPAMMER_MENU)
         return True
@@ -255,7 +265,8 @@ async def spammer_message_handler(message: Message):
                     "gender": state["gender"],
                     "desc": state["desc"],
                     "photos": state["photos"],
-                    "filters": filter_obj.copy()
+                    "filters": filter_obj.copy(),
+                    "signup_country": state.get("signup_country", "US"),
                 }
                 signup_result = await try_signup(user_state)
                 if signup_result.get("user", {}).get("_id"):
