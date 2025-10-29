@@ -119,10 +119,12 @@ async def signup_command(message: Message):
 
 async def signup_callback_handler(callback: CallbackQuery):
     user_id = callback.from_user.id
-    state = user_signup_states.get(user_id, {"stage": "menu"})
+    # Always get the existing state object, never overwrite with a new dict!
+    if user_id not in user_signup_states:
+        user_signup_states[user_id] = {"stage": "menu"}
+    state = user_signup_states[user_id]
     if callback.data == "signup_go":
         state["stage"] = "ask_email"
-        user_signup_states[user_id] = state
         await callback.message.edit_text("Enter your email for registration:", reply_markup=BACK_TO_SIGNUP)
         await callback.answer()
         return True
@@ -133,7 +135,6 @@ async def signup_callback_handler(callback: CallbackQuery):
         return True
     if callback.data == "signin_go":
         state["stage"] = "signin_email"
-        user_signup_states[user_id] = state
         await callback.message.edit_text("Enter your email to sign in:", reply_markup=BACK_TO_SIGNUP)
         await callback.answer()
         return True
@@ -145,7 +146,7 @@ async def signup_callback_handler(callback: CallbackQuery):
             await callback.message.edit_text("Choose an option:", reply_markup=SIGNUP_MENU)
             return True
         await callback.message.edit_text("Checking verification and logging in...", reply_markup=None)
-        login_result = await try_signin(creds['email'], creds['password'])
+        login_result = await try_signin(creds['email'], creds['password'], state)
         if login_result.get("accessToken"):
             await store_token_and_show_card(callback.message, login_result, creds)
         elif login_result.get("errorCode") in ("NotVerified", "EmailVerificationRequired"):
@@ -162,7 +163,7 @@ async def signup_callback_handler(callback: CallbackQuery):
         if not creds or not creds.get("email") or not creds.get("password"):
             await callback.answer("No signup info. Please sign up again.", show_alert=True)
             return True
-        login_result = await try_signin(creds['email'], creds['password'])
+        login_result = await try_signin(creds['email'], creds['password'], state)
         access_token = login_result.get("accessToken")
         if not access_token:
             await callback.answer("Token not available. Try signing up again.", show_alert=True)
@@ -202,7 +203,7 @@ async def signup_callback_handler(callback: CallbackQuery):
 async def signup_message_handler(message: Message):
     user_id = message.from_user.id
     if user_id not in user_signup_states:
-        return False
+        user_signup_states[user_id] = {"stage": "menu"}
     state = user_signup_states[user_id]
     if message.text and message.text.startswith("/"):
         return False
@@ -216,6 +217,8 @@ async def signup_message_handler(message: Message):
             return True
         state["stage"] = "ask_password"
         state["email"] = email
+        # Generate and store device_info for this signup session
+        state["device_info"] = random_device_info()
         await message.answer("Enter a password for your account:", reply_markup=BACK_TO_SIGNUP)
         return True
     if state.get("stage") == "ask_password":
@@ -305,7 +308,7 @@ async def signup_message_handler(message: Message):
         email = state["signin_email"]
         password = message.text.strip()
         processing_msg = await message.answer("Signing in, please wait...", reply_markup=None)
-        login_result = await try_signin(email, password)
+        login_result = await try_signin(email, password, state)
         if login_result.get("accessToken"):
             state["creds"] = {"email": email, "password": password}
             creds = state["creds"]
@@ -371,7 +374,7 @@ async def meeff_upload_image(img_bytes):
         return None
 
 async def try_signup(state):
-    device_info = random_device_info()
+    device_info = state.get("device_info") or random_device_info()
     if state.get("photos"):
         photos_str = "|".join(state["photos"])
     else:
@@ -407,8 +410,12 @@ async def try_signup(state):
         async with session.post(url, json=payload, headers=headers) as resp:
             return await resp.json()
 
-async def try_signin(email, password):
-    device_info = random_device_info()
+async def try_signin(email, password, state=None):
+    # Use device_info from state if present, else random
+    if state is not None and "device_info" in state:
+        device_info = state["device_info"]
+    else:
+        device_info = random_device_info()
     url = "https://api.meeff.com/user/login/v4"
     payload = {
         "provider": "email",
